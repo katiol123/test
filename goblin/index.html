@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Гоблин-воин</title>
+<style>
+  :root { --bg: #1a1712; --panel: rgba(20, 18, 14, 0.78); --text: #efe6d2; --muted: #b7ab92; --accent: #9bc53d; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #ui { position: fixed; left: 16px; bottom: 16px; right: 16px; display: flex; flex-wrap: wrap; gap: 10px;
+    align-items: center; pointer-events: none; }
+  #ui > * { pointer-events: auto; }
+  button { background: var(--accent); color: #1b2207; border: 0; border-radius: 8px; padding: 10px 18px;
+    font-size: 16px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 0 #5d7a1f; }
+  button:active { transform: translateY(2px); box-shadow: none; }
+  label { background: var(--panel); padding: 8px 12px; border-radius: 8px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+  #hint { position: fixed; top: 14px; left: 16px; right: 16px; font-size: 13px; color: var(--muted); }
+  #hint b { color: var(--text); }
+  #hits { position: fixed; top: 14px; right: 16px; font-size: 14px; background: var(--panel); padding: 6px 10px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div id="hint"><b>Гоблин-воин</b> · Пробел / клик / кнопка — удар · мышь — вращение камеры</div>
+<div id="hits">Ударов: <span id="hitCount">0</span></div>
+<div id="ui">
+  <button id="attackBtn">⚔ Удар</button>
+  <label><input type="checkbox" id="auto"> Авто-атака</label>
+  <label>Скорость <input type="range" id="speed" min="0.25" max="2" step="0.05" value="1"></label>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- Сцена ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1712);
+scene.fog = new THREE.Fog(0x1a1712, 6, 14);
+
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 50);
+camera.position.set(2.6, 1.6, 2.6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(-0.1, 0.8, 0.35);
+controls.enableDamping = true;
+controls.minDistance = 1.5;
+controls.maxDistance = 8;
+controls.maxPolarAngle = Math.PI * 0.49;
+
+scene.add(new THREE.HemisphereLight(0xcfe3ff, 0x3a2a18, 0.9));
+const sun = new THREE.DirectionalLight(0xfff1d6, 2.2);
+sun.position.set(3, 5, 2.5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -3, right: 3, top: 3, bottom: -3, near: 0.5, far: 15 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+const torch = new THREE.PointLight(0xff8a3d, 6, 6, 1.6);
+torch.position.set(-1.6, 1.6, -0.6);
+scene.add(torch);
+
+// пол
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(7, 64),
+  new THREE.MeshStandardMaterial({ color: 0x4a3d2a, roughness: 1 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+// камушки
+const stoneMat = new THREE.MeshStandardMaterial({ color: 0x6d6457, roughness: 0.95 });
+for (let i = 0; i < 40; i++) {
+  const s = new THREE.Mesh(new THREE.DodecahedronGeometry(0.03 + Math.random() * 0.07, 0), stoneMat);
+  const a = Math.random() * Math.PI * 2, r = 1.3 + Math.random() * 4;
+  s.position.set(Math.cos(a) * r, 0.01, Math.sin(a) * r);
+  s.rotation.set(Math.random() * 3, Math.random() * 3, 0);
+  s.scale.y = 0.5;
+  s.castShadow = s.receiveShadow = true;
+  scene.add(s);
+}
+
+// ---------- Материалы ----------
+const M = {
+  skin:    new THREE.MeshStandardMaterial({ color: 0x6f9a35, roughness: 0.65 }),
+  skinDk:  new THREE.MeshStandardMaterial({ color: 0x4f7224, roughness: 0.7 }),
+  leather: new THREE.MeshStandardMaterial({ color: 0x5e3b1f, roughness: 0.85 }),
+  leathDk: new THREE.MeshStandardMaterial({ color: 0x3b2412, roughness: 0.9 }),
+  cloth:   new THREE.MeshStandardMaterial({ color: 0x7a2a22, roughness: 0.95 }),
+  iron:    new THREE.MeshStandardMaterial({ color: 0x8d9298, metalness: 0.85, roughness: 0.38 }),
+  rust:    new THREE.MeshStandardMaterial({ color: 0x6b4a36, metalness: 0.5, roughness: 0.7 }),
+  edge:    new THREE.MeshStandardMaterial({ color: 0xd9dee3, metalness: 1, roughness: 0.18 }),
+  bone:    new THREE.MeshStandardMaterial({ color: 0xeee3c4, roughness: 0.5 }),
+  eye:     new THREE.MeshStandardMaterial({ color: 0xffd23a, emissive: 0xffb000, emissiveIntensity: 1.2 }),
+  pupil:   new THREE.MeshBasicMaterial({ color: 0x110800 }),
+  wood:    new THREE.MeshStandardMaterial({ color: 0x8a6a42, roughness: 0.9 }),
+  straw:   new THREE.MeshStandardMaterial({ color: 0xc9a85a, roughness: 1 }),
+  sack:    new THREE.MeshStandardMaterial({ color: 0xa88c62, roughness: 1 }),
+};
+
+function add(parent, geo, mat, pos = [0, 0, 0], rot = [0, 0, 0], scl = [1, 1, 1]) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(...pos); m.rotation.set(...rot); m.scale.set(...scl);
+  m.castShadow = true; m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+function joint(parent, name, pos) {
+  const g = new THREE.Group();
+  g.name = name; g.position.set(...pos);
+  parent.add(g);
+  J[name] = g;
+  return g;
+}
+const sph = (r, w = 20, h = 16) => new THREE.SphereGeometry(r, w, h);
+const cap = (r, l) => new THREE.CapsuleGeometry(r, l, 6, 14);
+const cone = (r, h, s = 12) => new THREE.ConeGeometry(r, h, s);
+const box = (x, y, z) => new THREE.BoxGeometry(x, y, z);
+const cyl = (rt, rb, h, s = 16) => new THREE.CylinderGeometry(rt, rb, h, s);
+
+// ---------- Гоблин ----------
+const J = {};
+const goblin = new THREE.Group();
+scene.add(goblin);
+
+const hips = joint(goblin, 'hips', [0, 0.78, 0]);
+add(hips, sph(0.2), M.leather, [0, 0, 0], [0, 0, 0], [1.1, 0.7, 0.85]);
+add(hips, cyl(0.215, 0.215, 0.06, 20), M.leathDk, [0, 0.06, 0], [0, 0, 0], [1.05, 1, 0.8]); // ремень
+add(hips, box(0.07, 0.06, 0.02), M.iron, [0, 0.06, 0.17]);                                // пряжка
+add(hips, box(0.2, 0.26, 0.02), M.cloth, [0, -0.1, 0.16], [0.08, 0, 0]);                  // набедренная повязка
+add(hips, box(0.18, 0.22, 0.02), M.cloth, [0, -0.09, -0.16], [-0.08, 0, 0]);
+
+const spine = joint(hips, 'spine', [0, 0.06, 0]);
+add(spine, sph(0.21), M.skin, [0, 0.12, 0.03], [0, 0, 0], [1, 1, 0.95]);   // пузо
+
+const chest = joint(spine, 'chest', [0, 0.2, 0]);
+add(chest, sph(0.22), M.skin, [0, 0.05, 0], [0, 0, 0], [1.25, 0.9, 0.85]);
+add(chest, box(0.06, 0.5, 0.02), M.leathDk, [0.02, 0.0, 0.0], [0, 0, 0.75]).position.set(0, 0.03, 0.16); // перевязь
+add(chest, box(0.06, 0.5, 0.02), M.leathDk, [0, 0.03, -0.16], [0, 0, 0.75]);
+add(chest, cyl(0.09, 0.11, 0.08), M.skin, [0, 0.19, 0.0]);                 // шея-основание
+
+// голова
+const neck = joint(chest, 'neck', [0, 0.2, 0.02]);
+const head = joint(neck, 'head', [0, 0.1, 0.04]);
+add(head, sph(0.19, 24, 18), M.skin, [0, 0.04, 0], [0, 0, 0], [1.05, 0.9, 1]);
+add(head, sph(0.15), M.skin, [0, -0.06, 0.06], [0, 0, 0], [1.05, 0.7, 0.95]);        // челюсть
+add(head, box(0.3, 0.05, 0.08), M.skinDk, [0, 0.08, 0.15], [0.25, 0, 0]);           // надбровье
+add(head, cone(0.045, 0.2), M.skin, [0, 0.0, 0.25], [Math.PI / 2 + 0.35, 0, 0]);       // нос
+add(head, sph(0.03), M.skinDk, [0, -0.04, 0.34]);                                      // кончик носа
+for (const s of [-1, 1]) {
+  const eye = add(head, sph(0.04), M.eye, [0.075 * s, 0.04, 0.15]);
+  eye.name = 'eye';
+  add(eye, sph(0.018), M.pupil, [0.004 * s, 0, 0.032], [0, 0, 0], [0.6, 1.3, 0.6]);
+  J['eye' + (s < 0 ? 'R' : 'L')] = eye;
+  // уши
+  const ear = joint(head, 'ear' + (s < 0 ? 'R' : 'L'), [0.17 * s, 0.05, -0.02]);
+  add(ear, cone(0.07, 0.38, 10), M.skin, [0.17 * s, 0.03, 0], [0, 0, -s * (Math.PI / 2 - 0.2)], [1, 1, 0.45]);
+  add(ear, cone(0.04, 0.26, 8), M.skinDk, [0.15 * s, 0.03, 0.012], [0, 0, -s * (Math.PI / 2 - 0.2)], [1, 1, 0.3]);
+  // клыки
+  add(head, cone(0.018, 0.07, 8), M.bone, [0.06 * s, -0.04, 0.17], [0.15, 0, 0]);
+}
+add(head, box(0.12, 0.012, 0.01), M.pupil, [0, -0.085, 0.17]);                       // рот
+// шлем
+add(head, new THREE.SphereGeometry(0.205, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2.2), M.iron, [0, 0.07, -0.01], [-0.15, 0, 0]);
+add(head, cyl(0.21, 0.21, 0.03, 24), M.rust, [0, 0.1, -0.005], [-0.15, 0, 0]);
+add(head, cone(0.035, 0.16, 10), M.iron, [0, 0.31, -0.05], [-0.15, 0, 0]);
+
+// руки
+function buildArm(side) {   // side: -1 правая (−X), +1 левая
+  const n = side < 0 ? 'R' : 'L';
+  const sh = joint(chest, 'sh' + n, [0.26 * side, 0.1, 0]);
+  add(sh, new THREE.SphereGeometry(0.11, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), M.iron, [0.02 * side, 0.02, 0], [0, 0, -side * 0.35]);
+  add(sh, cone(0.025, 0.08, 8), M.iron, [0.07 * side, 0.1, 0], [0, 0, -side * 0.6]);
+  add(sh, cap(0.065, 0.18), M.skin, [0, -0.15, 0]);
+  const el = joint(sh, 'el' + n, [0, -0.29, 0]);
+  add(el, cap(0.058, 0.16), M.skin, [0, -0.12, 0]);
+  add(el, cyl(0.07, 0.065, 0.12), M.leather, [0, -0.17, 0]);
+  const wr = joint(el, 'wr' + n, [0, -0.27, 0]);
+  add(wr, sph(0.065), M.skin, [0, -0.03, 0], [0, 0, 0], [1, 1.1, 1.15]);
+  for (let i = -1; i <= 1; i++) add(wr, sph(0.024), M.skinDk, [i * 0.03, -0.07, 0.04]); // костяшки
+  return wr;
+}
+const handR = buildArm(-1);
+const handL = buildArm(1);
+
+// оружие — грубый топор-тесак (ручка вдоль +Z ладони, лезвие смотрит в −Y)
+const axe = new THREE.Group();
+axe.position.set(0, -0.04, 0);
+handR.add(axe);
+add(axe, cyl(0.022, 0.026, 0.72, 10), M.wood, [0, 0, 0.16], [Math.PI / 2, 0, 0]);
+add(axe, cyl(0.028, 0.028, 0.06, 10), M.leathDk, [0, 0, 0.0], [Math.PI / 2, 0, 0]);
+add(axe, sph(0.035), M.iron, [0, 0, -0.2]);
+const bladeShape = new THREE.Shape();
+bladeShape.moveTo(0, 0.04); bladeShape.lineTo(-0.05, 0.04);
+bladeShape.lineTo(-0.24, 0.13); bladeShape.quadraticCurveTo(-0.3, 0, -0.24, -0.13);
+bladeShape.lineTo(-0.05, -0.04); bladeShape.lineTo(0, -0.04);
+const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, { depth: 0.02, bevelEnabled: true, bevelSize: 0.008, bevelThickness: 0.006, bevelSegments: 1 });
+bladeGeo.translate(0, 0, -0.01);
+// shape: X → Y ладони (лезвие уходит в −Y), Y → Z (вдоль ручки), толщина → X
+bladeGeo.applyMatrix4(new THREE.Matrix4().makeBasis(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 0, 0)));
+add(axe, bladeGeo, M.iron, [0, 0, 0.44]);
+add(axe, box(0.034, 0.025, 0.2), M.edge, [0, -0.29, 0.44]);                     // заточенная кромка
+add(axe, cone(0.03, 0.12, 6), M.rust, [0, 0.09, 0.44], [0, 0, 0]);               // шип на обухе
+add(axe, cyl(0.032, 0.032, 0.1, 10), M.rust, [0, 0, 0.44], [Math.PI / 2, 0, 0]);
+const trailA = new THREE.Object3D(); trailA.position.set(0, -0.3, 0.44); axe.add(trailA);
+const trailB = new THREE.Object3D(); trailB.position.set(0, -0.06, 0.44); axe.add(trailB);
+
+// щит
+const shield = new THREE.Group();
+shield.position.set(0.05, -0.04, 0.0);
+shield.rotation.set(0, 0, -0.1);
+handL.add(shield);
+add(shield, cyl(0.22, 0.22, 0.035, 24), M.wood, [0, 0, 0], [0, 0, Math.PI / 2]);
+add(shield, new THREE.TorusGeometry(0.22, 0.018, 8, 28), M.rust, [0, 0, 0], [0, Math.PI / 2, 0]);
+add(shield, sph(0.06, 14, 10), M.iron, [0.03, 0, 0], [0, 0, 0], [0.6, 1, 1]);
+add(shield, box(0.04, 0.42, 0.03), M.rust, [0.02, 0, 0]);
+// нарисованный череп-знак
+add(shield, sph(0.04), M.bone, [0.02, 0.1, 0.0], [0, 0, 0], [0.3, 1, 1]);
+
+// ноги
+function buildLeg(side) {
+  const n = side < 0 ? 'R' : 'L';
+  const th = joint(hips, 'th' + n, [0.12 * side, -0.05, 0]);
+  add(th, cap(0.08, 0.18), M.skin, [0, -0.16, 0]);
+  add(th, cyl(0.1, 0.09, 0.12), M.cloth, [0, -0.04, 0]);
+  const kn = joint(th, 'kn' + n, [0, -0.33, 0]);
+  add(kn, sph(0.07), M.leather, [0, 0, 0.03], [0, 0, 0], [1, 1, 0.8]);
+  add(kn, cap(0.062, 0.18), M.skin, [0, -0.15, 0]);
+  add(kn, cyl(0.075, 0.068, 0.14), M.leathDk, [0, -0.2, 0]);
+  const an = joint(kn, 'an' + n, [0, -0.31, 0]);
+  add(an, box(0.13, 0.08, 0.24), M.skin, [0, -0.04, 0.06]);
+  for (let i = -1; i <= 1; i++) add(an, cone(0.015, 0.05, 6), M.bone, [i * 0.04, -0.06, 0.2], [Math.PI / 2, 0, 0]);
+}
+buildLeg(-1);
+buildLeg(1);
+
+goblin.traverse(o => { if (o.isMesh) o.castShadow = true; });
+
+// ---------- Тренировочное чучело ----------
+const dummy = new THREE.Group();
+dummy.position.set(-0.22, 0, 1.08);
+scene.add(dummy);
+add(dummy, cyl(0.25, 0.3, 0.08, 20), M.wood, [0, 0.04, 0]);
+const dPivot = new THREE.Group(); dPivot.position.y = 0.08; dummy.add(dPivot);
+add(dPivot, cyl(0.035, 0.04, 1.3, 10), M.wood, [0, 0.65, 0]);
+add(dPivot, cyl(0.17, 0.15, 0.55, 16), M.sack, [0, 0.95, 0]);
+add(dPivot, new THREE.TorusGeometry(0.16, 0.015, 6, 20), M.leathDk, [0, 1.05, 0], [Math.PI / 2, 0, 0]);
+add(dPivot, new THREE.TorusGeometry(0.16, 0.015, 6, 20), M.leathDk, [0, 0.82, 0], [Math.PI / 2, 0, 0]);
+add(dPivot, cyl(0.025, 0.025, 0.8, 8), M.wood, [0, 1.12, 0], [0, 0, Math.PI / 2]);
+add(dPivot, sph(0.13), M.sack, [0, 1.38, 0]);
+for (const s of [-1, 1]) add(dPivot, box(0.03, 0.03, 0.01), M.leathDk, [0.045 * s, 1.4, 0.125], [0, 0, 0.785]);
+for (let i = 0; i < 6; i++) add(dPivot, cone(0.015, 0.12, 4), M.straw, [0.4 * (i % 2 ? 1 : -1), 1.12, 0], [0, 0, (i % 2 ? -1 : 1) * Math.PI / 2 + (i - 3) * 0.2]);
+const dState = { ax: 0, az: 0, vx: 0, vz: 0 };
+
+// ---------- Частицы (щепки, солома, искры) ----------
+const chipGeo = box(0.03, 0.012, 0.02);
+const particles = [];
+const chipMats = [M.straw, M.sack, M.wood];
+const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true });
+function burst(pos, dir) {
+  for (let i = 0; i < 26; i++) {
+    const spark = i < 8;
+    const m = new THREE.Mesh(spark ? sph(0.012, 6, 4) : chipGeo, spark ? sparkMat.clone() : chipMats[i % 3]);
+    m.position.copy(pos);
+    m.castShadow = !spark;
+    scene.add(m);
+    const v = new THREE.Vector3((Math.random() - 0.5) * 2, Math.random() * 1.6 + 0.4, (Math.random() - 0.2) * 2).multiplyScalar(spark ? 2.6 : 1.4);
+    v.addScaledVector(dir, 1.2);
+    particles.push({ m, v, life: spark ? 0.35 : 1.6, max: spark ? 0.35 : 1.6, spin: new THREE.Vector3(Math.random() * 20, Math.random() * 20, 0), spark });
+  }
+}
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    p.v.y -= 6 * dt;
+    p.m.position.addScaledVector(p.v, dt);
+    if (p.m.position.y < 0.01) { p.m.position.y = 0.01; p.v.multiplyScalar(0.3); p.v.y = Math.abs(p.v.y) * 0.3; p.spin.multiplyScalar(0.5); }
+    p.m.rotation.x += p.spin.x * dt; p.m.rotation.y += p.spin.y * dt;
+    if (p.spark) p.m.material.opacity = Math.max(0, p.life / p.max);
+    else if (p.life < 0.4) p.m.scale.setScalar(Math.max(0.01, p.life / 0.4));
+    if (p.life <= 0) { scene.remove(p.m); if (p.spark) p.m.material.dispose(); particles.splice(i, 1); }
+  }
+}
+
+// ---------- След от удара ----------
+const TRAIL_N = 22;
+const trailPos = new Float32Array(TRAIL_N * 2 * 3);
+const trailCol = new Float32Array(TRAIL_N * 2 * 3);
+const trailIdx = [];
+for (let i = 0; i < TRAIL_N - 1; i++) {
+  const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+  trailIdx.push(a, b, c, b, d, c);
+}
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+trailGeo.setAttribute('color', new THREE.BufferAttribute(trailCol, 3));
+trailGeo.setIndex(trailIdx);
+const trailMesh = new THREE.Mesh(trailGeo, new THREE.MeshBasicMaterial({
+  vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
+}));
+trailMesh.frustumCulled = false;
+scene.add(trailMesh);
+const trailHist = [];
+let trailStrength = 0;
+const _a = new THREE.Vector3(), _b = new THREE.Vector3();
+function updateTrail() {
+  trailA.getWorldPosition(_a); trailB.getWorldPosition(_b);
+  trailHist.unshift([_a.clone(), _b.clone()]);
+  if (trailHist.length > TRAIL_N) trailHist.pop();
+  for (let i = 0; i < TRAIL_N; i++) {
+    const h = trailHist[Math.min(i, trailHist.length - 1)];
+    trailPos.set([h[0].x, h[0].y, h[0].z], i * 6);
+    trailPos.set([h[1].x, h[1].y, h[1].z], i * 6 + 3);
+    const k = Math.pow(1 - i / (TRAIL_N - 1), 1.6) * trailStrength;
+    trailCol.set([1.0 * k, 0.85 * k, 0.55 * k], i * 6);
+    trailCol.set([0.25 * k, 0.2 * k, 0.12 * k], i * 6 + 3);
+  }
+  trailGeo.attributes.position.needsUpdate = true;
+  trailGeo.attributes.color.needsUpdate = true;
+}
+
+// ---------- Позы и анимация ----------
+// Поза: { jointName: { rx, ry, rz, px, py, pz } }. Неуказанные поля берутся из REST.
+const REST = {
+  hips:  { px: 0, py: 0.76, pz: 0, rx: 0, ry: 0.12, rz: 0 },
+  spine: { rx: 0.12, ry: 0, rz: 0 },
+  chest: { rx: 0.15, ry: 0, rz: 0 },
+  neck:  { rx: -0.12, ry: 0, rz: 0 },
+  head:  { rx: -0.08, ry: 0, rz: 0 },
+  shR:   { rx: -0.25, ry: 0, rz: -0.28 },
+  elR:   { rx: -0.9 },
+  wrR:   { rx: 0.25, ry: 0, rz: 0 },
+  shL:   { rx: -0.55, ry: 0, rz: 0.3 },
+  elL:   { rx: -1.25 },
+  wrL:   { rx: 0, ry: 0.2, rz: 0 },
+  thL:   { rx: -0.35, ry: 0, rz: 0.12 },
+  knL:   { rx: 0.55 },
+  thR:   { rx: 0.15, ry: 0, rz: -0.12 },
+  knR:   { rx: 0.4 },
+  earL:  { rz: 0 }, earR: { rz: 0 },
+};
+const pose = (over) => {
+  const p = structuredClone(REST);
+  for (const k in over) Object.assign(p[k], over[k]);
+  return p;
+};
+const TAU = Math.PI * 2;
+const WINDUP = pose({
+  hips:  { py: 0.72, pz: -0.06, ry: -0.25 },
+  spine: { rx: -0.12, ry: -0.3 },
+  chest: { rx: -0.22, ry: -0.2 },
+  neck:  { rx: 0.15 }, head: { rx: 0.1, ry: 0.35 },
+  shR:   { rx: 3.35, rz: -0.4 },
+  elR:   { rx: -1.2 },
+  wrR:   { rx: 1.55 },
+  shL:   { rx: -0.85, rz: 0.75 }, elL: { rx: -0.7 },
+  thL:   { rx: -0.6 }, knL: { rx: 0.9 },
+  thR:   { rx: 0.35 }, knR: { rx: 0.6 },
+  earL:  { rz: 0.25 }, earR: { rz: -0.25 },
+});
+const ANTICIP = pose({ ...WINDUP,
+  hips:  { py: 0.7, pz: -0.08, ry: -0.3 },
+  shR:   { rx: 3.45, rz: -0.42 }, elR: { rx: -1.35 }, wrR: { rx: 1.7 },
+});
+const STRIKE = pose({
+  hips:  { py: 0.66, pz: 0.16, ry: 0.28 },
+  spine: { rx: 0.38, ry: 0.25 },
+  chest: { rx: 0.32, ry: 0.15 },
+  neck:  { rx: -0.35 }, head: { rx: -0.25, ry: 0 },
+  shR:   { rx: 4.2, rz: -0.12 },
+  elR:   { rx: -0.15 },
+  wrR:   { rx: 1.0 },
+  shL:   { rx: 0.35, rz: 0.45 }, elL: { rx: -0.9 },
+  thL:   { rx: 0.35 }, knL: { rx: 0.55 },
+  thR:   { rx: -0.95 }, knR: { rx: 0.95 },
+  earL:  { rz: -0.35 }, earR: { rz: 0.35 },
+});
+const FOLLOW = pose({ ...STRIKE,
+  hips:  { py: 0.64, pz: 0.18, ry: 0.35 },
+  spine: { rx: 0.45, ry: 0.32 },
+  shR:   { rx: 4.5, rz: -0.08 }, elR: { rx: -0.25 }, wrR: { rx: 1.05 },
+});
+const RECOVER = pose({ shR: { rx: REST.shR.rx + TAU } }); // тот же угол, без «перекрута» руки
+
+const ease = {
+  inOut: t => t * t * (3 - 2 * t),
+  in:    t => t * t * t,
+  out:   t => 1 - Math.pow(1 - t, 3),
+  lin:   t => t,
+};
+// t — нормированное время атаки (0..1)
+const KEYS = [
+  { t: 0.00, p: REST },
+  { t: 0.30, p: WINDUP,  e: ease.out },
+  { t: 0.40, p: ANTICIP, e: ease.inOut },
+  { t: 0.48, p: STRIKE,  e: ease.in },
+  { t: 0.60, p: FOLLOW,  e: ease.out },
+  { t: 1.00, p: RECOVER, e: ease.inOut },
+];
+const HIT_T = 0.475;
+const ATTACK_DUR = 1.25; // сек
+
+function samplePose(t) {
+  let i = 0;
+  while (i < KEYS.length - 2 && t > KEYS[i + 1].t) i++;
+  const a = KEYS[i], b = KEYS[i + 1];
+  const k = b.e(THREE.MathUtils.clamp((t - a.t) / (b.t - a.t), 0, 1));
+  const out = {};
+  for (const j in REST) {
+    out[j] = {};
+    for (const f in REST[j]) out[j][f] = a.p[j][f] + (b.p[j][f] - a.p[j][f]) * k;
+  }
+  return out;
+}
+
+function applyPose(p, time) {
+  // процедурный «живой» слой поверх ключевых поз
+  const br = Math.sin(time * 2.2);
+  p.chest.rx += br * 0.03;
+  p.hips.py += Math.sin(time * 4.4) * 0.006;
+  p.head.ry += Math.sin(time * 0.9) * 0.12 * idleW;
+  p.head.rz = Math.sin(time * 0.7) * 0.06 * idleW;
+  p.shR.rz += br * 0.02; p.shL.rz -= br * 0.02;
+  p.earL.rz += Math.sin(time * 3.1) * 0.05 + earTwitch;
+  p.earR.rz -= Math.sin(time * 2.7) * 0.05 + earTwitch;
+
+  for (const j in p) {
+    const o = J[j], v = p[j];
+    if ('px' in v) o.position.set(v.px, v.py, v.pz);
+    o.rotation.set(v.rx ?? 0, v.ry ?? 0, v.rz ?? 0);
+  }
+  // ступни держим параллельно земле
+  for (const n of ['L', 'R']) J['an' + n].rotation.x = -(p.hips.rx + p['th' + n].rx + p['kn' + n].rx);
+  // моргание
+  const blink = (time % 3.7) < 0.12 ? 0.15 : 1;
+  J.eyeL.scale.y = J.eyeR.scale.y = blink;
+}
+
+// ---------- Управление ----------
+let attackT = -1;          // < 0 — не атакуем
+let queued = false;
+let hitDone = false;
+let idleW = 1;
+let earTwitch = 0;
+let shake = 0;
+let hitStop = 0;
+let hits = 0;
+const speedEl = document.getElementById('speed');
+const autoEl = document.getElementById('auto');
+function attack() {
+  if (attackT < 0) { attackT = 0; hitDone = false; }
+  else if (attackT > 0.55) queued = true;
+}
+document.getElementById('attackBtn').addEventListener('click', attack);
+addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); attack(); } });
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', e => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 5) attack();
+  downAt = null;
+});
+
+function onHit() {
+  hitDone = true;
+  hits++;
+  document.getElementById('hitCount').textContent = hits;
+  const p = new THREE.Vector3();
+  trailA.getWorldPosition(p);
+  const dummyPos = new THREE.Vector3(dummy.position.x, p.y, dummy.position.z - 0.15);
+  burst(dummyPos, new THREE.Vector3(0, 0.2, 1));
+  dState.vx += 5.5;
+  dState.vz += (Math.random() - 0.5) * 2;
+  shake = 0.12;
+  hitStop = 0.07;
+  earTwitch = 0.5;
+}
+
+// ---------- Цикл ----------
+const clock = new THREE.Clock();
+let time = 0;
+const camOffset = new THREE.Vector3();
+function frame() {
+  let dt = Math.min(clock.getDelta(), 1 / 20);
+  if (hitStop > 0) { hitStop -= dt; dt *= 0.08; }
+  dt *= parseFloat(speedEl.value);
+  time += dt;
+
+  if (attackT < 0 && (autoEl.checked || queued)) { queued = false; attackT = 0; hitDone = false; }
+  let p;
+  if (attackT >= 0) {
+    attackT += dt / ATTACK_DUR;
+    if (!hitDone && attackT >= HIT_T) onHit();
+    if (attackT >= 1) { attackT = -1; p = structuredClone(REST); }
+    else p = samplePose(attackT);
+    idleW = Math.max(0, idleW - dt * 6);
+  } else {
+    p = structuredClone(REST);
+    idleW = Math.min(1, idleW + dt * 2);
+  }
+  if (window.__freeze != null) p = samplePose(window.__freeze);
+  const swinging = attackT > 0.36 && attackT < 0.7;
+  trailStrength += ((swinging ? 1 : 0) - trailStrength) * Math.min(1, dt * (swinging ? 30 : 8));
+  earTwitch *= Math.exp(-dt * 6);
+  applyPose(p, time);
+  goblin.updateMatrixWorld(true);
+  updateTrail();
+
+  // чучело на пружине
+  dState.vx += (-60 * dState.ax - 3.2 * dState.vx) * dt;
+  dState.vz += (-60 * dState.az - 3.2 * dState.vz) * dt;
+  dState.ax += dState.vx * dt * 0.1; dState.az += dState.vz * dt * 0.1;
+  dPivot.rotation.set(dState.ax, 0, dState.az);
+  updateParticles(dt);
+
+  controls.update();
+  camera.position.sub(camOffset);
+  shake = Math.max(0, shake - dt);
+  camOffset.set((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).multiplyScalar(shake * 0.35);
+  camera.position.add(camOffset);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// для отладки/скриншотов: window.__freeze = 0.48 замораживает фазу удара
+window.__freeze = null;
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
